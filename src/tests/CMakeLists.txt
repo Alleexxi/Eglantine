@@ -15,6 +15,9 @@ add_executable(tests
     video_core/gpu_timestamp.cpp
     video_core/maxwell_fast_method.cpp
     video_core/split_write_tracker.cpp
+    video_core/list_writer_trace.cpp
+    video_core/list_copy_demand.cpp
+    video_core/buffer_dependency_trace.cpp
     video_core/nx2_written_pages.cpp
     video_core/frame_dump_schedule.cpp
     core/nx2_debug_server.cpp

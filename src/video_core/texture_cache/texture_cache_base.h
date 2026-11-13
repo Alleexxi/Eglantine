@@ -247,6 +247,21 @@ public:
     /// Return a constant reference to the given image view id
     [[nodiscard]] const ImageView& GetImageView(ImageViewId id) const noexcept;
 
+    /// Diagnostic state, not a complete producer history or an asynchronous-queue safety proof.
+    [[nodiscard]] std::pair<bool, bool> Nx2ViewWrittenState(ImageViewId id) const noexcept {
+        if (id == NULL_IMAGE_VIEW_ID) {
+            return {};
+        }
+        const auto& view = slot_image_views[id];
+        if (view.IsBuffer() || !view.image_id) {
+            return {};
+        }
+        const ImageBase& image = slot_images[view.image_id];
+        const bool gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
+        return {gpu_modified,
+                gpu_modified && image.modification_tick > frame_start_modification_tick};
+    }
+
     /// Return a reference to the given image view id
     [[nodiscard]] ImageView& GetImageView(ImageViewId id) noexcept;
 
@@ -675,6 +690,7 @@ private:
     Common::ScratchBuffer<u8> unswizzle_data_buffer;
 
     u64 modification_tick = 0;
+    u64 frame_start_modification_tick = 0;
     u64 frame_tick = 0;
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -31,10 +32,15 @@ namespace {
 constexpr size_t MaxDepth = 40;
 
 struct Sample {
+    long long qpc;
     unsigned thread;
     unsigned depth;
     std::array<DWORD64, MaxDepth> frames;
 };
+
+std::atomic<bool> recording_presents{false};
+std::atomic<size_t> present_count{0};
+std::array<long long, 1 << 17> presents{};
 
 struct Target {
     HANDLE handle;
@@ -303,6 +309,29 @@ std::string Report(const std::vector<Target>& targets, const std::vector<Sample>
         }
         std::fclose(out);
     }
+
+    // <out>.timeline: "P <qpc>" per present and "S <qpc>\t<thread>\t<root;...;leaf>" per sample.
+    if (std::FILE* const out = std::fopen((std::string{path} + ".timeline").c_str(), "w")) {
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        std::fprintf(out, "F %lld\n", static_cast<long long>(frequency.QuadPart));
+        const size_t count = (std::min)(present_count.load(), presents.size());
+        for (size_t i = 0; i < count; ++i) {
+            std::fprintf(out, "P %lld\n", presents[i]);
+        }
+        for (const Sample& sample : samples) {
+            std::string stack;
+            for (unsigned i = sample.depth; i-- > 0;) {
+                stack += symbolizer.Name(sample.frames[i]);
+                if (i != 0) {
+                    stack += ';';
+                }
+            }
+            std::fprintf(out, "S %lld\t%s\t%s\n", sample.qpc, targets[sample.thread].name.c_str(),
+                         stack.c_str());
+        }
+        std::fclose(out);
+    }
     return text;
 }
 
@@ -321,11 +350,20 @@ std::string SampleThreads(const std::vector<std::string>& patterns, double secon
     LARGE_INTEGER start_qpc{}, end_qpc{}, qpc_frequency{};
     QueryPerformanceFrequency(&qpc_frequency);
     QueryPerformanceCounter(&start_qpc);
+    // Sleep(1) lasts a whole 15.6 ms scheduler tick unless something raised the timer
+    // resolution; a high resolution timer keeps the interval near 1 ms either way.
+    constexpr DWORD HighResolutionTimer = 0x2; // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+    const HANDLE timer =
+        CreateWaitableTimerExW(nullptr, nullptr, HighResolutionTimer, TIMER_ALL_ACCESS);
+    present_count.store(0);
+    recording_presents.store(true);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
     while (std::chrono::steady_clock::now() < deadline &&
            samples.size() + targets.size() <= samples.capacity()) {
         for (unsigned i = 0; i < targets.size(); ++i) {
             const HANDLE handle = targets[i].handle;
+            LARGE_INTEGER now{};
+            QueryPerformanceCounter(&now);
             if (SuspendThread(handle) == static_cast<DWORD>(-1)) {
                 continue;
             }
@@ -333,12 +371,23 @@ std::string SampleThreads(const std::vector<std::string>& patterns, double secon
             context.ContextFlags = CONTEXT_FULL;
             if (GetThreadContext(handle, &context)) {
                 Sample& sample = samples.emplace_back();
+                sample.qpc = now.QuadPart;
                 sample.thread = i;
                 sample.depth = Walk(context, sample.frames);
             }
             ResumeThread(handle);
         }
-        Sleep(1);
+        LARGE_INTEGER due{};
+        due.QuadPart = -10000; // 1 ms, relative
+        if (timer != nullptr && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+            WaitForSingleObject(timer, INFINITE);
+        } else {
+            Sleep(1);
+        }
+    }
+    recording_presents.store(false);
+    if (timer != nullptr) {
+        CloseHandle(timer);
     }
     QueryPerformanceCounter(&end_qpc);
     std::string text = Report(targets, samples, out.c_str());
@@ -364,6 +413,18 @@ std::string Sample(const char* names, double seconds, const std::string& out) {
     return SampleThreads(SplitNames(names), seconds, out);
 }
 
+void NotePresent() {
+    if (!recording_presents.load(std::memory_order_relaxed)) {
+        return;
+    }
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    const size_t index = present_count.fetch_add(1, std::memory_order_relaxed);
+    if (index < presents.size()) {
+        presents[index] = now.QuadPart;
+    }
+}
+
 void StartFromEnvironment() {
     const char* names = std::getenv("EDEN_NX2_SAMPLE");
     if (names == nullptr || *names == '\0') {
@@ -387,6 +448,7 @@ void StartFromEnvironment() {}
 std::string Sample(const char*, double, const std::string&) {
     return "the sampler is Windows only";
 }
+void NotePresent() {}
 } // namespace Nx2Sampler
 
 #endif

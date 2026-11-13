@@ -30,6 +30,7 @@
 #include "common/alignment.h"
 #include "common/div_ceil.h"
 #include "common/game_presets.h"
+#include "common/nx2_sampler.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
@@ -1907,6 +1908,7 @@ private:
         }
         const auto paced = std::chrono::steady_clock::now();
         VideoCommon::Nx2Spikes::OnPresent(entered, waited, composited, paced);
+        Nx2Sampler::NotePresent();
         if (const auto* const process = system.ApplicationProcess(); process != nullptr) {
             if (const u64 address = process->GetOotDeltaAddress(); address != 0) {
                 system.ApplicationMemory().Write32(
