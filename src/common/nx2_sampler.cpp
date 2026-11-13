@@ -308,6 +308,8 @@ std::string Report(const std::vector<Target>& targets, const std::vector<Sample>
 
 std::string SampleThreads(const std::vector<std::string>& patterns, double seconds,
                           const std::string& out) {
+    const std::string completion_path = out + ".complete";
+    std::remove(completion_path.c_str());
     const std::vector<Target> targets = FindThreads(patterns);
     std::fprintf(stderr, "nx2 sampler: %zu threads match, sampling %.0f s\n", targets.size(),
                  seconds);
@@ -316,6 +318,9 @@ std::string SampleThreads(const std::vector<std::string>& patterns, double secon
     }
     std::vector<Sample> samples;
     samples.reserve(static_cast<size_t>(seconds * 1100.0) * targets.size() + 16);
+    LARGE_INTEGER start_qpc{}, end_qpc{}, qpc_frequency{};
+    QueryPerformanceFrequency(&qpc_frequency);
+    QueryPerformanceCounter(&start_qpc);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
     while (std::chrono::steady_clock::now() < deadline &&
            samples.size() + targets.size() <= samples.capacity()) {
@@ -335,7 +340,17 @@ std::string SampleThreads(const std::vector<std::string>& patterns, double secon
         }
         Sleep(1);
     }
+    QueryPerformanceCounter(&end_qpc);
     std::string text = Report(targets, samples, out.c_str());
+    if (std::FILE* complete = std::fopen(completion_path.c_str(), "w")) {
+        std::fprintf(complete,
+                     "{\"start_qpc\":%lld,\"end_qpc\":%lld,\"qpc_frequency\":%lld,"
+                     "\"samples\":%zu,\"threads\":%zu}\n",
+                     static_cast<long long>(start_qpc.QuadPart),
+                     static_cast<long long>(end_qpc.QuadPart),
+                     static_cast<long long>(qpc_frequency.QuadPart), samples.size(), targets.size());
+        std::fclose(complete);
+    }
     std::fprintf(stderr, "nx2 sampler: %zu samples written to %s\n", samples.size(), out.c_str());
     for (const auto& target : targets) {
         CloseHandle(target.handle);

@@ -123,6 +123,17 @@ void BufferCache<P>::TickFrame() {
         native_indirect_uniform_last_bank = ~DAddr{0};
         native_indirect_uniform_last_ptr = nullptr;
     }
+    if (nx2_list_copy_log && frame_tick % 600 == 0) {
+        std::scoped_lock lock{nx2_list_mutex};
+        const auto& stats = nx2_list_copy_stats;
+        LOG_INFO(HW_GPU,
+                 "Command page copies last 600 frames: {} copies {} KiB, {} replaced unread; "
+                 "reads {} copied {} synced {} missed {} waited; {} pages {} retired",
+                 stats.copies, stats.bytes >> 10, stats.replaced_unread, stats.copied,
+                 stats.synced, stats.misses, stats.waits, nx2_list_pages.size(),
+                 nx2_retired_list_copies.size());
+        nx2_list_copy_stats = {};
+    }
     if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
         for (const auto& [address, size] : uploaded_buffer_ranges) {
             device_memory.HintCold(address, size);
@@ -2586,10 +2597,16 @@ bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
             recorded = true;
             std::scoped_lock lock{nx2_list_mutex};
             Nx2ListPage& entry = nx2_list_pages[page];
+            if (nx2_list_copy_log) {
+                ++nx2_list_copy_stats.copies;
+                nx2_list_copy_stats.bytes += copy.size;
+                nx2_list_copy_stats.replaced_unread += entry.copy && !entry.copy_read;
+            }
             if (entry.copy) {
                 nx2_retired_list_copies.emplace_back(entry.copy_tick, std::move(*entry.copy));
             }
             entry.copy = staging;
+            entry.copy_read = false;
             entry.copy_writes = entry.writes;
             entry.copy_tick = tick;
             entry.copy_time = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
@@ -2631,9 +2648,12 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool 
             std::scoped_lock lock{nx2_list_mutex};
             const auto it = nx2_list_pages.find(page);
             if (it == nx2_list_pages.end()) {
+                if (nx2_list_copy_log) {
+                    ++nx2_list_copy_stats.misses;
+                }
                 return Nx2ListRead::Unknown;
             }
-            const Nx2ListPage& entry = it->second;
+            Nx2ListPage& entry = it->second;
             if (entry.draw_written) {
                 // EDEN_NX2_CMDPAGE_DRAIN=1: drain and flush for every list on such pages.
                 static const bool always_drain = std::getenv("EDEN_NX2_CMDPAGE_DRAIN") != nullptr;
@@ -2648,31 +2668,56 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool 
             }
             // Pages the CPU writes the lists of (GPU-written once, long before) stay synced.
             if (entry.synced_writes == entry.writes) {
+                if (nx2_list_copy_log) {
+                    ++nx2_list_copy_stats.synced;
+                }
                 return Nx2ListRead::Synced;
             }
             if (!current(entry)) {
+                if (nx2_list_copy_log) {
+                    ++nx2_list_copy_stats.misses;
+                }
                 return Nx2ListRead::Unknown;
             }
             // The lists after the first of a batch find the copy done: read it at once.
             if (runtime.IsFree(entry.copy_tick)) {
+                if (nx2_list_copy_log) {
+                    entry.copy_read = true;
+                    ++nx2_list_copy_stats.copied;
+                }
                 std::memcpy(out.data(), entry.copy->mapped_span.data() + offset, out.size());
                 return Nx2ListRead::Copied;
             }
             tick = entry.copy_tick;
             writes = entry.copy_writes;
             copy_time = entry.copy_time;
+            if (nx2_list_copy_log) {
+                ++nx2_list_copy_stats.waits;
+            }
         }
-        // Submitted with the work that wrote the page (Nx2CopyListPages's caller flushes).
+        // Submitted with the work that wrote the page (Nx2CopyListPages's caller flushes). The
+        // back can submit its open tick itself; front readers must ask its owner to do so.
         {
             Nx2Profile::Scope profile_scope{Nx2Profile::Zone::ListCopyWait};
-            runtime.WaitSubmittedTick(tick);
+            if (GpuSplit::OnBackThread()) {
+                runtime.Wait(tick);
+            } else {
+                runtime.WaitSubmittedTick(tick);
+            }
         }
         Nx2Profile::AddListCopyDone(copy_time);
         std::scoped_lock lock{nx2_list_mutex};
         const auto it = nx2_list_pages.find(page);
         if (it == nx2_list_pages.end() || !current(it->second) || it->second.copy_tick != tick ||
             it->second.copy_writes != writes) {
+            if (nx2_list_copy_log) {
+                ++nx2_list_copy_stats.misses;
+            }
             return Nx2ListRead::Unknown;
+        }
+        if (nx2_list_copy_log) {
+            it->second.copy_read = true;
+            ++nx2_list_copy_stats.copied;
         }
         std::memcpy(out.data(), it->second.copy->mapped_span.data() + offset, out.size());
         return Nx2ListRead::Copied;

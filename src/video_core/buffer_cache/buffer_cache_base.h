@@ -1033,9 +1033,17 @@ private:
         /// the page's lists read guest memory once the back ran the work before the last such
         /// wait and no write came since the front flushed the page (Nx2ReadListCopy).
         bool draw_written{};
+        bool copy_read{};
         std::optional<Nx2Staging> copy;
     };
     std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
+    const bool nx2_list_copy_log = [] {
+        const char* value = std::getenv("EDEN_NX2_LIST_COPY_LOG");
+        return value != nullptr && value[0] == '1';
+    }();
+    struct Nx2ListCopyStats {
+        u64 copies{}, bytes{}, replaced_unread{}, copied{}, synced{}, misses{}, waits{};
+    } nx2_list_copy_stats; ///< Protected by nx2_list_mutex.
     std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;
     /// Copies replaced while the GPU may still write them: freed once it is past their tick.
     std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;

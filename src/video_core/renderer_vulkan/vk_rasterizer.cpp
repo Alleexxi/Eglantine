@@ -2110,9 +2110,33 @@ bool RasterizerVulkan::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheT
 
 VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64 size) {
     std::optional<VideoCore::RasterizerDownloadArea> texture_area;
+    // EDEN_NX2_FLUSH_AREA_STATS=1 (diagnostic): how guest reads of trapped pages resolve and how
+    // long they wait for the texture cache lock.
+    static const bool flush_stats = [] {
+        const char* value = std::getenv("EDEN_NX2_FLUSH_AREA_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    const auto lock_begin = flush_stats ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
     {
         std::scoped_lock lock{texture_cache.mutex};
+        const auto locked = flush_stats ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
         texture_area = texture_cache.GetFlushArea(addr, size);
+        if (flush_stats) {
+            static std::atomic<u64> calls{}, none{}, preemptive{}, flush{}, wait_ns{};
+            wait_ns.fetch_add(static_cast<u64>((locked - lock_begin).count()),
+                              std::memory_order_relaxed);
+            (!texture_area ? none : texture_area->preemtive ? preemptive : flush)
+                .fetch_add(1, std::memory_order_relaxed);
+            const u64 n = calls.fetch_add(1, std::memory_order_relaxed) + 1;
+            if ((n % 20000) == 0) {
+                LOG_INFO(Render_Vulkan,
+                         "nx2 flush area: {} trapped reads: {} without GPU-written images, {} "
+                         "already flushed, {} flushing; {:.1f} ms waiting for the texture cache",
+                         n, none.load(), preemptive.load(), flush.load(), wait_ns.load() / 1e6);
+            }
+        }
     }
     if (texture_area) {
         // The core disarmed the read's pages before asking: the buffer cache arms only pages it
