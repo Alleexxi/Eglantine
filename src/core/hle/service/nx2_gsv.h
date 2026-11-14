@@ -1841,6 +1841,7 @@ private:
             frames_ahead = 0;
         }
         const auto entered = std::chrono::steady_clock::now();
+        m_host_while_suspended = frames_ahead != 0;
         if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
                       m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
@@ -2233,10 +2234,12 @@ private:
     /// from rewriting memory the GPU thread still reads. This service thread sleeps in the guest
     /// kernel on an event the fence signals, so the game's other threads on its core run
     /// meanwhile. A host wait held the whole core for the fence wait (about 15 ms a frame in
-    /// Ocarina of Time on Windows: ~34 instead of ~50 FPS). While a GPU channel is suspended
-    /// on a semaphore it waits on the host instead: Mario Kart World's channels wait for releases
-    /// its CPU makes after this present, and sleeping in the guest then deadlocked (about 1 in 3
-    /// boots). EDEN_NX2_FENCE_WAIT=host always waits on the host.
+    /// Ocarina of Time on Windows: ~34 instead of ~50 FPS). In the frames-ahead modes it waits
+    /// on the host while a GPU channel is suspended on a semaphore: Mario Kart World's channels
+    /// wait for releases its CPU makes after this present, and sleeping in the guest then
+    /// deadlocked (about 1 in 3 boots). Ocarina of Time (frames ahead 0) suspends channels often
+    /// and fell back to ~34 FPS with that rule everywhere. EDEN_NX2_FENCE_WAIT=host always waits
+    /// on the host.
     bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
         if (fence_id >= 192) {
             return true;
@@ -2345,6 +2348,7 @@ private:
         u32 armed_value{};
     };
     std::shared_ptr<FrameFenceWaiter> m_frame_waiter = std::make_shared<FrameFenceWaiter>();
+    bool m_host_while_suspended{true};
 
     /// Sleeps this (guest) service thread until the fence, `deadline` (which `abort` may extend),
     /// `abort()` or a suspended GPU channel (the caller then waits on the host), in slices of at
@@ -2374,7 +2378,7 @@ private:
                                            });
         }
         while (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
-            if (abort() || system.GPU().HasSuspendedChannels()) {
+            if (abort() || (m_host_while_suspended && system.GPU().HasSuspendedChannels())) {
                 return;
             }
             const auto now = std::chrono::steady_clock::now();
