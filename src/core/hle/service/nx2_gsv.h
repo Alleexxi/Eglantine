@@ -2230,11 +2230,10 @@ private:
 
     ///
     /// The guest syncpoint counts what Eden's GPU thread has consumed: that is what keeps the game
-    /// from rewriting memory the GPU thread still reads. By default this service thread sleeps in
-    /// the guest kernel on an event the fence signals, so the game's other threads on its core
-    /// run meanwhile. A host wait held the whole core for the fence wait (about 15 ms a frame in
-    /// Ocarina of Time on Windows: ~34 instead of ~50 FPS). EDEN_NX2_FENCE_WAIT=host waits on the
-    /// host instead.
+    /// from rewriting memory the GPU thread still reads. In Ocarina of Time this service thread
+    /// sleeps in the guest kernel on an event the fence signals, so the game's other threads on
+    /// its core run meanwhile. A host wait held the whole core for the fence wait (about 15 ms a
+    /// frame there on Windows: ~34 instead of ~50 FPS). See GuestFenceWait.
     bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
         if (fence_id >= 192) {
             return true;
@@ -2321,12 +2320,21 @@ private:
         return syncpoints.IsReadyGuest(fence_id, fence_value);
     }
 
-    static bool GuestFenceWait() {
-        static const bool guest = [] {
+    /// Ocarina of Time only unless EDEN_NX2_FENCE_WAIT=guest|host says otherwise: Mario Kart World
+    /// busy-polls on this thread's core, so once this thread sleeps in the guest it may never run
+    /// again (present #8 deadlock in about 1 of 3 boots).
+    bool GuestFenceWait() const {
+        static const int forced = [] {
             const char* value = std::getenv("EDEN_NX2_FENCE_WAIT");
-            return value == nullptr || std::string_view{value} != "host";
+            if (value == nullptr) {
+                return -1;
+            }
+            return std::string_view{value} == "host" ? 0 : 1;
         }();
-        return guest;
+        if (forced >= 0) {
+            return forced == 1;
+        }
+        return system.GetApplicationProcessProgramID() == 0x0400486024DEC000ULL;
     }
 
     /// Outlives the session: the fence action may fire on the GPU thread after it is gone, and
