@@ -2230,10 +2230,13 @@ private:
 
     ///
     /// The guest syncpoint counts what Eden's GPU thread has consumed: that is what keeps the game
-    /// from rewriting memory the GPU thread still reads. In Ocarina of Time this service thread
-    /// sleeps in the guest kernel on an event the fence signals, so the game's other threads on
-    /// its core run meanwhile. A host wait held the whole core for the fence wait (about 15 ms a
-    /// frame there on Windows: ~34 instead of ~50 FPS). See GuestFenceWait.
+    /// from rewriting memory the GPU thread still reads. This service thread sleeps in the guest
+    /// kernel on an event the fence signals, so the game's other threads on its core run
+    /// meanwhile. A host wait held the whole core for the fence wait (about 15 ms a frame in
+    /// Ocarina of Time on Windows: ~34 instead of ~50 FPS). While a GPU channel is suspended
+    /// on a semaphore it waits on the host instead: Mario Kart World's channels wait for releases
+    /// its CPU makes after this present, and sleeping in the guest then deadlocked (about 1 in 3
+    /// boots). EDEN_NX2_FENCE_WAIT=host always waits on the host.
     bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
         if (fence_id >= 192) {
             return true;
@@ -2276,7 +2279,9 @@ private:
             const auto poll = std::chrono::milliseconds{unless_gpu_waits ? 1 : 50};
             if (GuestFenceWait()) {
                 WaitForFrameInGuest(fence_id, fence_value, deadline, abort, poll);
-            } else {
+            }
+            if (!gave_up && !syncpoints.IsReadyGuest(fence_id, fence_value) &&
+                system.IsPoweredOn() && std::chrono::steady_clock::now() < deadline) {
                 // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps
                 // slept about 1 ms per check on Windows, added to every frame. An action left
                 // registered after a timeout fires later on a state nobody waits on.
@@ -2320,21 +2325,12 @@ private:
         return syncpoints.IsReadyGuest(fence_id, fence_value);
     }
 
-    /// Ocarina of Time only unless EDEN_NX2_FENCE_WAIT=guest|host says otherwise: Mario Kart World
-    /// busy-polls on this thread's core, so once this thread sleeps in the guest it may never run
-    /// again (present #8 deadlock in about 1 of 3 boots).
-    bool GuestFenceWait() const {
-        static const int forced = [] {
+    static bool GuestFenceWait() {
+        static const bool guest = [] {
             const char* value = std::getenv("EDEN_NX2_FENCE_WAIT");
-            if (value == nullptr) {
-                return -1;
-            }
-            return std::string_view{value} == "host" ? 0 : 1;
+            return value == nullptr || std::string_view{value} != "host";
         }();
-        if (forced >= 0) {
-            return forced == 1;
-        }
-        return system.GetApplicationProcessProgramID() == 0x0400486024DEC000ULL;
+        return guest;
     }
 
     /// Outlives the session: the fence action may fire on the GPU thread after it is gone, and
@@ -2350,8 +2346,9 @@ private:
     };
     std::shared_ptr<FrameFenceWaiter> m_frame_waiter = std::make_shared<FrameFenceWaiter>();
 
-    /// Sleeps this (guest) service thread until the fence, `deadline` (which `abort` may extend)
-    /// or `abort()`, in slices of at most `poll`.
+    /// Sleeps this (guest) service thread until the fence, `deadline` (which `abort` may extend),
+    /// `abort()` or a suspended GPU channel (the caller then waits on the host), in slices of at
+    /// most `poll`.
     template <typename Abort>
     void WaitForFrameInGuest(u32 fence_id, u32 fence_value,
                              const std::chrono::steady_clock::time_point& deadline, Abort& abort,
@@ -2377,7 +2374,7 @@ private:
                                            });
         }
         while (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
-            if (abort()) {
+            if (abort() || system.GPU().HasSuspendedChannels()) {
                 return;
             }
             const auto now = std::chrono::steady_clock::now();
