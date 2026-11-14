@@ -1,0 +1,47 @@
+name: branch-build-windows
+
+# Windows build of this branch for a fork whose default branch does not carry ci.yml (ci.yml runs
+# its scheme script from the default branch and can only be dispatched from there). Calls the same
+# reusable build-windows.yml with the version scheme tools/ci/prepare.sh uses for branch builds.
+# The binaries are uploaded as workflow artifacts; nothing is published as a release.
+on:
+  push:
+    branches:
+      - feat/nx2-exp-perf
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scheme:
+    name: Version scheme
+    runs-on: ubuntu-24.04
+    outputs:
+      slug: ${{ steps.s.outputs.slug }}
+      version: ${{ steps.s.outputs.version }}
+    steps:
+      - id: s
+        shell: bash
+        run: |
+          set -euo pipefail
+          slug=$(printf '%s' "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+          echo "version=$slug-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows
+    needs: scheme
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      sha: ${{ github.sha }}
+      version: ${{ needs.scheme.outputs.version }}
+      refspec: ${{ needs.scheme.outputs.slug }}
+      tag: branch-${{ needs.scheme.outputs.slug }}
+      release: false
+      nightly: true
+      pgo: none
