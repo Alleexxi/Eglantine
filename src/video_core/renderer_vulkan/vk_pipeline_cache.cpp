@@ -2680,9 +2680,18 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         bool eligible{mesh_index != 0 && (mesh_index == 1 || has_task) &&
                       layer_source_program == nullptr};
         const Shader::IR::Program& mesh{programs[mesh_index]};
-        eligible = eligible && mesh.mesh.topology == 4 && mesh.mesh.primitive_lines.empty() &&
+        // Points (0), lines (1) and triangles (4).
+        const u32 topology{mesh.mesh.topology};
+        eligible = eligible && (topology == 0 || topology == 1 || topology == 4) &&
+                   std::ranges::all_of(mesh.mesh.primitive_lines, [](u32 line) {
+                       return Shader::IR::IsGeneric(static_cast<Shader::IR::Attribute>(line));
+                   }) &&
                    !mesh.mesh.vertex_lines.empty() && mesh.mesh.max_vertices != 0 &&
                    mesh.mesh.max_primitives != 0;
+        for (const u32 line : mesh.mesh.primitive_lines) {
+            eligible = eligible && std::ranges::find(mesh.mesh.vertex_lines, line) ==
+                                       mesh.mesh.vertex_lines.end();
+        }
         for (size_t index = 1; index < Maxwell::MaxShaderProgram && eligible; ++index) {
             const bool emulated{index == mesh_index || (has_task && index == 1)};
             eligible = emulated || key.unique_hashes[index] == 0 ||
@@ -2746,6 +2755,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
         mesh_emulation->block_words = Shader::Backend::SPIRV::MeshEmulationBlockWords(mesh.mesh);
         mesh_emulation->max_primitives = mesh.mesh.max_primitives;
+        mesh_emulation->primitive_vertices = mesh.mesh.PrimitiveVertices();
         mesh_emulation->max_vertices = mesh.mesh.max_vertices;
         mesh_emulation->vertex_lines = static_cast<u32>(mesh.mesh.vertex_lines.size());
         for (u32 line = 0; line < mesh.mesh.vertex_lines.size(); ++line) {
