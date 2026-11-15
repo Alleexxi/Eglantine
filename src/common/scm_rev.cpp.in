@@ -76,27 +76,4 @@ std::string BuildDisplayName() {
     return fallback;
 }
 
-// What the window title and the About dialog show: the identity CI handed this
-// build, plus the packaging flavour when there is one. Falls back to the version
-// composed from the GIT-* files for builds that were given no identity at all.
-std::string BuildDisplayName() {
-    if (g_display_version[0] != '\0') {
-        std::string name{g_build_name};
-        name += ' ';
-        name += g_display_version;
-        if (g_build_flavour[0] != '\0') {
-            name += " (";
-            name += g_build_flavour;
-            name += ')';
-        }
-        return name;
-    }
-    std::string fallback{g_build_name};
-    fallback += " | ";
-    fallback += g_build_version;
-    fallback += " | ";
-    fallback += g_compiler_id;
-    return fallback;
-}
-
 } // namespace Common
