@@ -3926,9 +3926,9 @@ bool Image::ResetTiles() {
             .pNext = nullptr,
             .flags = 0,
         });
-        // Work already submitted may still read the blocks: binding on the same queue orders it
-        // after that work, and the memory is freed only once the bind is done.
-        scheduler->Flush();
+        // Earlier work may still read the blocks, and sparse binds aren't ordered against command
+        // buffers on the queue: wait for it before rebinding and freeing them.
+        scheduler->Finish();
         VkResult result;
         {
             std::scoped_lock lock{scheduler->submit_mutex};

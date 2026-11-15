@@ -2449,6 +2449,8 @@ void TextureCache<P>::RefreshUnmappedSparseTiles(Image& image, ImageId image_id)
         if (!image.ResetTiles()) {
             LOG_WARNING(HW_GPU, "Sparse tiled image {:#x}: could not reset its blocks",
                         image.gpu_addr);
+            // Retried on the next use.
+            image.flags |= ImageFlagBits::SparseTilesUnmapped;
         }
         RegisterImage(image_id);
         if (tracked) {
