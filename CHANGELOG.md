@@ -19,6 +19,7 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 - Upgraded Windows runner to 2025
 - Upgraded Non-Builder runners to 26.04
 - Added Nix Builds
+- General performance fixes
 
 ## [0.1.0]
 
