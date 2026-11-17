@@ -1648,6 +1648,37 @@ private:
     std::set<u32> m_logged;
 };
 
+// The session gsv 1121 returns (nn::gs::sdk::QueryApplicationGpuTimeSpan, Welcome Tour). The SDK
+// opens it once, checks it with 0(u64), which must echo the u64 back, then asks 11(u64, u64) for a
+// TimeSpan (nanoseconds) of the application's GPU time. No GPU time accounting exists here, so 11
+// answers zero.
+class INx2GpuTimeSession final : public ServiceFramework<INx2GpuTimeSession> {
+public:
+    explicit INx2GpuTimeSession(Core::System& system_) : ServiceFramework{system_, "nx2:gputime"} {
+        RegisterHandlersTipc({
+            {0, &INx2GpuTimeSession::Echo, "Check"},
+            {11, &INx2GpuTimeSession::QueryApplicationGpuTimeSpan, "QueryApplicationGpuTimeSpan"},
+        });
+    }
+
+private:
+    void Echo(HLERequestContext& ctx) {
+        TipcHandshake(ctx, "nx2:gputime");
+    }
+
+    void QueryApplicationGpuTimeSpan(HLERequestContext& ctx) {
+        const u32* w = ctx.CommandBuffer();
+        if (!m_logged) {
+            m_logged = true;
+            LOG_WARNING(Service, "(STUBBED) nx2:gputime TIPC 11 args {:#x} {:#x}, returning 0 ns",
+                        u64{w[2]} | (u64{w[3]} << 32), u64{w[4]} | (u64{w[5]} << 32));
+        }
+        TipcReplyWords(ctx, {0, 0});
+    }
+
+    bool m_logged{};
+};
+
 // Video decoder output images (nn::codec image pools, gsv 991/911/961). The preference
 // (MakeDecodeImagePreference) holds an output layout code at word 1 and (width - 1) |
 // (height - 1) << 16 at word 2. Codes come in pairs, one per CodecMode: 1/4 NV12 (format 3, what
@@ -3763,7 +3794,7 @@ public:
             {1111, &INx2GraphicsSystemSession::SetFeatureVersion, "SetGraphicsFrameLengthMode"},
             {1112, &INx2GraphicsSystemSession::StubReplyZeroed, "SetGraphicsFrameRestartMode"},
             {1113, &INx2GraphicsSystemSession::StubReplyZeroed, "SetGraphicsFrameGpuTimesliceMode"},
-            {1121, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1121"},
+            {1121, &INx2GraphicsSystemSession::OpenGpuTimeSession, "OpenGpuTimeSession"},
             {1203, &INx2GraphicsSystemSession::StubReplyZeroed, "DestroyChatContext"},
             {1212, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyImagePool"},
             {1501, &INx2GraphicsSystemSession::CheckPermission, "CreateInterModuleImageContext"},
@@ -3893,6 +3924,11 @@ private:
     void OpenChatSession(HLERequestContext& ctx) {
         LOG_WARNING(Service, "(STUBBED) nx2:gsv TIPC 1202, returning a nx2:chat session");
         ReturnRawSession(system, ctx, std::make_shared<INx2ChatGsvSession>(system));
+    }
+
+    void OpenGpuTimeSession(HLERequestContext& ctx) {
+        LOG_INFO(Service, "nx2:gsv TIPC 1121, returning a nx2:gputime session");
+        ReturnRawSession(system, ctx, std::make_shared<INx2GpuTimeSession>(system));
     }
 
     void OpenSyncptSession(HLERequestContext& ctx) {
